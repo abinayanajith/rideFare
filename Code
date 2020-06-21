@@ -1,0 +1,118 @@
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.multioutput import MultiOutputClassifier
+
+from sklearn.pipeline import Pipeline
+
+from sklearn.model_selection import train_test_split
+
+from sklearn.metrics import roc_curve, roc_auc_score
+
+from datetime import timedelta
+import numpy as np
+import pandas as pd
+
+from google.colab import drive
+drive.mount('/content/gdrive')
+
+RANDOM_SEED = 6    # Set a random seed for reproducibility!
+
+#train_data = pd.read_csv('/content/gdrive/My Drive/rideFare/train.csv',index_col="tripid",parse_dates=['pickup_time','drop_time'])
+#test_data = pd.read_csv('/content/gdrive/My Drive/rideFare/test.csv',index_col="tripid",parse_dates=['pickup_time','drop_time'])
+train_data = pd.read_csv('/content/gdrive/My Drive/rideFare/train.csv',parse_dates=['pickup_time','drop_time'])
+test_data = pd.read_csv('/content/gdrive/My Drive/rideFare/test.csv',parse_dates=['pickup_time','drop_time'])
+
+
+train_data['label'] = train_data['label'].map({
+    'correct': 1,
+    'incorrect': 0
+})
+train_data = train_data.dropna()
+train_data['time_taken'] = train_data['drop_time'] - train_data['pickup_time']
+train_data['time_taken_sec'] = train_data['time_taken'].dt.total_seconds()
+
+def haversine_array(lat1,lng1,lat2,lng2):
+  lat1 , lng1 ,lat2 , lng2 = map(np.radians, (lat1,lng1,lat2,lng2))
+  AVG_EARTH_RADIUS = 6371
+  lat = lat2 - lat1
+  lng = lng2 - lng1
+  d = np.sin(lat * 0.5) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(lng * 0.5) ** 2
+  h = 2 * AVG_EARTH_RADIUS * np.arcsin(np.sqrt(d))
+  return h
+
+train_data['haversine'] = train_data.apply(lambda x: haversine_array(x['pick_lat'],x['pick_lon'],x['drop_lat'],x['drop_lon']),axis = 1)
+#y= train_data.label
+y = train_data.drop(['tripid','additional_fare','duration','meter_waiting','meter_waiting_fare','meter_waiting_till_pickup','pickup_time','drop_time','time_taken','pick_lat','pick_lon','drop_lat','drop_lon','fare','haversine','time_taken_sec'],axis='columns')
+
+X = train_data.drop(['tripid','label','pickup_time','drop_time','time_taken','pick_lat','pick_lon','drop_lat','drop_lon'],axis='columns')
+
+from imblearn.over_sampling import SMOTE
+sm = SMOTE(random_state=33, k_neighbors = 1000)
+X_train, y_train = sm.fit_sample(X, y)
+
+#X_trainF = pd.DataFrame(data= np.int_(X_train[1:,1:]),index= np.int_(X_train[1:,0]), columns= np.int_(X_train[0,1:]))
+X_trainF = pd.DataFrame(data= np.float_(X_train[0:,0:]))
+X_trainF['additional_fare'] = X_trainF[0]
+X_trainF['duration'] = X_trainF[1]
+X_trainF['meter_waiting'] = X_trainF[2]
+X_trainF['meter_waiting_fare'] = X_trainF[3]
+X_trainF['meter_waiting_till_pickup'] = X_trainF[4]
+X_trainF['fare'] = X_trainF[5]
+X_trainF['time_taken_sec'] = X_trainF[6]
+X_trainF['haversine'] = X_trainF[7]
+X_trainF = X_trainF.drop([0,1,2,3,4,5,6,7],axis = 'columns')
+#y_trainF = pd.DataFrame(data= np.int_(y_train[1:,1:]),index= np.int_(y_train[1:,0]), columns= np.int_(y_train[0,1:]))
+y_trainF = pd.Series.to_frame(pd.Series(y_train))
+
+numeric_cols = X.columns[X.dtypes != "object"].values
+# chain preprocessing into a Pipeline object
+# each step is a tuple of (name you chose, sklearn transformer)
+numeric_preprocessing_steps = Pipeline([
+    ('standard_scaler', StandardScaler()),
+    ('simple_imputer', SimpleImputer(strategy='median'))
+])
+
+# create the preprocessor stage of final pipeline
+# each entry in the transformer list is a tuple of
+# (name you choose, sklearn transformer, list of columns)
+preprocessor = ColumnTransformer(
+    transformers = [
+        ("numeric", numeric_preprocessing_steps, numeric_cols)
+    ],
+    remainder = "drop"
+)
+
+from xgboost import XGBClassifier
+estimators = MultiOutputClassifier(
+    estimator=XGBClassifier(learning_rate =0.01,
+ n_estimators=5000,
+ max_depth=4,
+ min_child_weight=6,
+ gamma=0,
+ subsample=0.8,
+ colsample_bytree=0.8,
+ reg_alpha=0.005,
+ objective= 'binary:logistic',
+ nthread=4,
+ scale_pos_weight=1,
+ seed=27)
+)
+
+full_pipeline = Pipeline([
+    ("preprocessor", preprocessor),
+    ("estimators", estimators),
+])
+full_pipeline.fit(X_trainF, y_trainF)
+
+test_data['time_taken'] = test_data['drop_time']-test_data['pickup_time']
+test_data['time_taken_sec'] = test_data['time_taken'].dt.total_seconds()
+test_data['haversine'] = test_data.apply(lambda x: haversine_array(x['pick_lat'],x['pick_lon'],x['drop_lat'],x['drop_lon']),axis = 1)
+X_test = test_data.drop(['tripid','pickup_time','drop_time','time_taken','pick_lat','pick_lon','drop_lat','drop_lon'],axis = 'columns')
+
+predictions = full_pipeline.predict(X_test)
+
+test_data['prediction'] = predictions
+test_data.to_csv('data11.csv')
